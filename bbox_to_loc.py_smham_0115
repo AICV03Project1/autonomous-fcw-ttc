@@ -1,0 +1,510 @@
+import os
+import json
+from pathlib import Path
+from datetime import datetime
+from typing import List, Dict, Any, Tuple, Optional
+
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+from PIL import Image
+
+# ============================================================
+# 0) 사용자 입력 (확정)
+# ============================================================
+IMG_ROOT = Path("/content/ds_cache/차량상태인식_extracted/train")
+IN_CSV  = Path("/content/drive/MyDrive/datasets/차량상태인식/[AICV] 프로젝트 1/test_bbox_mjkim_0115.csv")
+OUT_CSV = Path("/content/drive/MyDrive/datasets/차량상태인식/[AICV] 프로젝트 1/test_bbox_mjkim_loc_smham_0115.csv")
+
+#CKPT_PATH = Path("/content/drive/MyDrive/roi_runs/roi_align_run_001/finetune_posw_sqrt_20260113_082525/best_by_microf1_bestth.pt")
+CKPT_PATH = Path("/content/drive/MyDrive/roi_runs/roi_align_run_001/retrain_boxexp_0p9_20260114_055029/epoch_008_compatible_weights.pt")
+
+# per-class threshold (action0~3)
+PER_CLASS_TH = [0.50, 0.90, 0.40, 0.25]
+
+# inference bbox expand 정책(이전과 동일)
+BOX_EXPAND_RATIO = 1.2
+
+# GT 매칭
+IOU_MATCH_THRESH = 0.5          # 필요 시 0.3으로 낮추세요
+REQUIRE_CLASS_MATCH = False     # GT의 cls와 CSV class 일치 강제할지
+
+# 프레임 배치(이미지 단위)
+FRAME_BATCH = 8                 # GPU 여유 있으면 8~16까지
+
+# GT txt 포맷 확정: x1 y1 x2 y2 cls loc a0 a1 a2 a3
+GT_PARSE_MODE = "mode3"
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+print("device:", device)
+print("IMG_ROOT:", IMG_ROOT)
+print("IN_CSV :", IN_CSV)
+print("OUT_CSV:", OUT_CSV)
+print("CKPT   :", CKPT_PATH)
+print("PER_CLASS_TH:", PER_CLASS_TH)
+
+# ============================================================
+# 1) frame_stem 파싱: 마지막 '_' 기준으로 env/img 분리
+# ============================================================
+def split_frame_stem(frame_stem: str) -> Tuple[str, str]:
+    env, img = frame_stem.rsplit("_", 1)
+    return env, img
+
+def resolve_paths(frame_stem: str) -> Tuple[Path, Path, str, str]:
+    env, img = split_frame_stem(frame_stem)
+    img_path = IMG_ROOT / env / "img" / f"{img}.png"
+    gt_path  = IMG_ROOT / env / "new_txt" / f"{img}.txt"
+    return img_path, gt_path, env, img
+
+# ============================================================
+# 2) bbox expand + clip
+# ============================================================
+def expand_boxes_xyxy(boxes: torch.Tensor, ratio: float, w: int, h: int) -> torch.Tensor:
+    if ratio == 1.0 or boxes.numel() == 0:
+        return boxes
+    x1, y1, x2, y2 = boxes.unbind(dim=1)
+    cx = (x1 + x2) / 2.0
+    cy = (y1 + y2) / 2.0
+    bw = (x2 - x1) * ratio
+    bh = (y2 - y1) * ratio
+    nx1 = (cx - bw / 2).clamp(0, w - 1)
+    ny1 = (cy - bh / 2).clamp(0, h - 1)
+    nx2 = (cx + bw / 2).clamp(0, w - 1)
+    ny2 = (cy + bh / 2).clamp(0, h - 1)
+    return torch.stack([nx1, ny1, nx2, ny2], dim=1)
+
+def clip_boxes_xyxy_np(boxes: np.ndarray, w: int, h: int) -> np.ndarray:
+    out = boxes.astype(np.float32).copy()
+    out[:, 0] = np.clip(out[:, 0], 0, w - 1)
+    out[:, 1] = np.clip(out[:, 1], 0, h - 1)
+    out[:, 2] = np.clip(out[:, 2], 0, w - 1)
+    out[:, 3] = np.clip(out[:, 3], 0, h - 1)
+    out[:, 2] = np.maximum(out[:, 2], out[:, 0] + 1)
+    out[:, 3] = np.maximum(out[:, 3], out[:, 1] + 1)
+    return out
+
+# ============================================================
+# 3) 모델 정의(이전과 동일): ResNet50-FPN + MultiScaleRoIAlign + TwoMLPHead
+# ============================================================
+import torchvision
+from torchvision.models.detection.backbone_utils import resnet_fpn_backbone
+from torchvision.models.detection.transform import GeneralizedRCNNTransform
+from torchvision.models.detection.faster_rcnn import TwoMLPHead
+from torchvision.ops import MultiScaleRoIAlign
+
+class RoiAlignMultiTask(nn.Module):
+    def __init__(self, num_loc=5, num_act=4,
+                 image_mean=(0.485, 0.456, 0.406), image_std=(0.229, 0.224, 0.225),
+                 min_size=800, max_size=1333,
+                 out_size=7, sampling_ratio=2):
+        super().__init__()
+        self.transform = GeneralizedRCNNTransform(
+            min_size=min_size, max_size=max_size,
+            image_mean=list(image_mean), image_std=list(image_std)
+        )
+        self.backbone = resnet_fpn_backbone("resnet50", weights=None, trainable_layers=3)
+        self.roi_pooler = MultiScaleRoIAlign(
+            featmap_names=["0", "1", "2", "3"],
+            output_size=out_size,
+            sampling_ratio=sampling_ratio
+        )
+        representation_size = 1024
+        self.box_head = TwoMLPHead(self.backbone.out_channels * out_size * out_size, representation_size)
+        self.location_head = nn.Linear(representation_size, num_loc)
+        self.action_head = nn.Linear(representation_size, num_act)
+
+    @torch.inference_mode()
+    def forward_logits(self, images: List[torch.Tensor], boxes_list: List[torch.Tensor]):
+        targets = [{"boxes": b} for b in boxes_list]
+        image_list, targets_t = self.transform(images, targets)
+        feats = self.backbone(image_list.tensors)
+        boxes_t = [t["boxes"] for t in targets_t]
+
+        pooled = self.roi_pooler(feats, boxes_t, image_list.image_sizes)
+        pooled = pooled.flatten(start_dim=1)
+        rep = self.box_head(pooled)
+
+        loc_logits = self.location_head(rep)
+        act_logits = self.action_head(rep)
+
+        loc_prob = torch.softmax(loc_logits, dim=1)
+        act_prob = torch.sigmoid(act_logits)
+
+        counts = [b.shape[0] for b in boxes_t]
+        return loc_prob, act_prob, counts
+
+def load_model(ckpt_path: Path) -> RoiAlignMultiTask:
+    model = RoiAlignMultiTask(num_loc=5, num_act=4).to(device)
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+    state = ckpt.get("model_state", ckpt.get("state_dict", ckpt))
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    print("load_state_dict(strict=False)")
+    print("  missing keys   :", len(missing))
+    print("  unexpected keys:", len(unexpected))
+    model.eval()
+    return model
+
+model = load_model(CKPT_PATH)
+
+# ============================================================
+# 4) GT 파싱 + IoU 매칭
+#   - 확정 포맷: x1 y1 x2 y2 cls loc a0 a1 a2 a3  (mode3)
+# ============================================================
+def iou_xyxy(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    if a.size == 0 or b.size == 0:
+        return np.zeros((a.shape[0], b.shape[0]), dtype=np.float32)
+
+    ax1, ay1, ax2, ay2 = a[:, 0:1], a[:, 1:2], a[:, 2:3], a[:, 3:4]
+    bx1, by1, bx2, by2 = b[:, 0], b[:, 1], b[:, 2], b[:, 3]
+
+    inter_x1 = np.maximum(ax1, bx1)
+    inter_y1 = np.maximum(ay1, by1)
+    inter_x2 = np.minimum(ax2, bx2)
+    inter_y2 = np.minimum(ay2, by2)
+
+    inter_w = np.maximum(0.0, inter_x2 - inter_x1)
+    inter_h = np.maximum(0.0, inter_y2 - inter_y1)
+    inter = inter_w * inter_h
+
+    area_a = np.maximum(0.0, (ax2 - ax1)) * np.maximum(0.0, (ay2 - ay1))
+    area_b = np.maximum(0.0, (bx2 - bx1)) * np.maximum(0.0, (by2 - by1))
+    union = area_a + area_b - inter
+    return (inter / np.maximum(union, 1e-6)).astype(np.float32)
+
+def _try_parse_line_mode3(vals: List[float]) -> Optional[Dict[str, Any]]:
+    # x1 y1 x2 y2 cls loc a0 a1 a2 a3
+    if len(vals) < 10:
+        return None
+    x1, y1, x2, y2 = vals[0], vals[1], vals[2], vals[3]
+    cls = int(round(vals[4]))
+    loc = int(round(vals[5]))
+    acts = [int(round(v)) for v in vals[6:10]]
+    return {"cls": cls, "bbox": [x1, y1, x2, y2], "location": loc, "action": acts}
+
+def parse_gt_file(gt_path: Path, img_w: int, img_h: int, mode: str = "mode3") -> List[Dict[str, Any]]:
+    if not gt_path.exists():
+        return []
+
+    objs: List[Dict[str, Any]] = []
+    lines = gt_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        toks = [t for t in line.replace(",", " ").split() if t]
+        try:
+            vals = [float(t) for t in toks]
+        except:
+            continue
+
+        if mode != "mode3":
+            # 이 스크립트는 mode3 확정이므로, 안전하게 mode3만 지원
+            continue
+
+        cand = _try_parse_line_mode3(vals)
+        if cand is None:
+            continue
+
+        # bbox clip/보정
+        x1, y1, x2, y2 = cand["bbox"]
+        x1 = float(np.clip(x1, 0, img_w - 1))
+        y1 = float(np.clip(y1, 0, img_h - 1))
+        x2 = float(np.clip(x2, 0, img_w - 1))
+        y2 = float(np.clip(y2, 0, img_h - 1))
+        if x2 <= x1: x2 = min(img_w - 1, x1 + 1)
+        if y2 <= y1: y2 = min(img_h - 1, y1 + 1)
+        cand["bbox"] = [x1, y1, x2, y2]
+
+        objs.append(cand)
+
+    return objs
+
+def match_gt_for_boxes(
+    csv_boxes_xyxy: np.ndarray,
+    gt_objs: List[Dict[str, Any]],
+    iou_thresh: float,
+    csv_classes: Optional[np.ndarray] = None,
+    require_class_match: bool = False,
+) -> List[Optional[Dict[str, Any]]]:
+    if len(gt_objs) == 0:
+        return [None] * len(csv_boxes_xyxy)
+
+    gt_boxes = np.array([o["bbox"] for o in gt_objs], dtype=np.float32)
+    ious = iou_xyxy(csv_boxes_xyxy.astype(np.float32), gt_boxes)
+
+    out: List[Optional[Dict[str, Any]]] = []
+    for i in range(len(csv_boxes_xyxy)):
+        iou_row = ious[i].copy()
+
+        if require_class_match and (csv_classes is not None):
+            cls_i = int(csv_classes[i])
+            for g, o in enumerate(gt_objs):
+                if int(o.get("cls", -999)) != cls_i:
+                    iou_row[g] = -1.0
+
+        best_j = int(np.argmax(iou_row))
+        best_iou = float(iou_row[best_j])
+
+        if best_iou >= iou_thresh:
+            out.append({**gt_objs[best_j], "match_iou": best_iou})
+        else:
+            out.append(None)
+    return out
+
+# ============================================================
+# 5) CSV 로드 + 경로 컬럼 구성
+# ============================================================
+df = pd.read_csv(IN_CSV)
+
+need_cols = ["frame_stem", "x1", "y1", "x2", "y2"]
+for c in need_cols:
+    if c not in df.columns:
+        raise ValueError(f"CSV에 '{c}' 컬럼이 없습니다.")
+
+env_list, img_list, img_path_list, gt_path_list = [], [], [], []
+for fs in df["frame_stem"].astype(str).tolist():
+    img_p, gt_p, env, img = resolve_paths(fs)
+    env_list.append(env)
+    img_list.append(img)
+    img_path_list.append(str(img_p))
+    gt_path_list.append(str(gt_p))
+
+df["env_from_stem"] = env_list
+df["img_from_stem"] = img_list
+df["image_path"] = img_path_list
+df["gt_path"] = gt_path_list
+
+# ============================================================
+# 6) 출력 컬럼 준비
+#   - pred action: 0/1 (threshold 적용)
+#   - GT 없으면: NA/NaN
+# ============================================================
+# Pred 컬럼(항상 존재)
+df["location"] = pd.Series([pd.NA] * len(df), dtype="Int64")  # pred location도 이미지 없으면 NA로 둘 수 있게
+
+# location 확률 컬럼 (softmax)
+df["loc_maxp"] = np.nan
+for k in range(5):
+    df[f"loc_p{k}"] = np.nan
+
+df["a0"] = pd.Series([pd.NA] * len(df), dtype="Int64")
+df["a1"] = pd.Series([pd.NA] * len(df), dtype="Int64")
+df["a2"] = pd.Series([pd.NA] * len(df), dtype="Int64")
+df["a3"] = pd.Series([pd.NA] * len(df), dtype="Int64")
+
+# GT 컬럼(없으면 NA)
+df["location_gt"] = pd.Series([pd.NA] * len(df), dtype="Int64")
+df["a0_gt"] = pd.Series([pd.NA] * len(df), dtype="Int64")
+df["a1_gt"] = pd.Series([pd.NA] * len(df), dtype="Int64")
+df["a2_gt"] = pd.Series([pd.NA] * len(df), dtype="Int64")
+df["a3_gt"] = pd.Series([pd.NA] * len(df), dtype="Int64")
+
+df["gt_match_iou"] = np.nan
+df["gt_found"] = pd.Series([pd.NA] * len(df), dtype="Int64")  # 1 or NA
+df["loc_match"] = pd.Series([pd.NA] * len(df), dtype="boolean")  # True/False/NA
+
+groups = list(df.groupby("frame_stem", sort=False))
+print("num frames:", len(groups), "num rows:", len(df))
+
+# ============================================================
+# 7) 프레임 배치 인퍼런스 + GT 매칭 + DF 업데이트
+# ============================================================
+def load_image_as_tensor(img_path: Path) -> Tuple[torch.Tensor, int, int]:
+    img = Image.open(img_path).convert("RGB")
+    w, h = img.size
+    arr = np.array(img, dtype=np.uint8)
+    t = torch.from_numpy(arr).permute(2, 0, 1).float() / 255.0
+    return t, w, h
+
+def run_batch_infer(model: RoiAlignMultiTask, batch_items: List[Dict[str, Any]]):
+    images: List[torch.Tensor] = []
+    boxes_list: List[torch.Tensor] = []
+    meta: List[Dict[str, Any]] = []
+
+    # 1) 이미지/박스 준비
+    for item in batch_items:
+        img_t, w, h = load_image_as_tensor(item["img_path"])
+
+        # 원본 박스 clip (GT 매칭에도 동일한 박스를 사용)
+        boxes_np = clip_boxes_xyxy_np(item["boxes_np"], w, h)
+
+        # ROIAlign 입력은 expand 적용
+        boxes_t = torch.from_numpy(boxes_np).float()
+        boxes_t = expand_boxes_xyxy(boxes_t, BOX_EXPAND_RATIO, w=w, h=h)
+
+        images.append(img_t.to(device))
+        boxes_list.append(boxes_t.to(device))
+        meta.append({**item, "w": w, "h": h, "boxes_np_clipped": boxes_np})
+
+    # 2) 모델 forward
+    with torch.inference_mode():
+        loc_prob, act_prob, counts = model.forward_logits(images, boxes_list)
+    loc_prob = loc_prob.detach().cpu().numpy()
+    act_prob = act_prob.detach().cpu().numpy()
+
+    ths = np.array(PER_CLASS_TH, dtype=np.float32).reshape(1, 4)
+
+    # 3) frame별 결과 분배
+    offset = 0
+    for item in meta:
+        ridx = item["row_idx"]                   # df row indices (np array)
+        n = int(item["boxes_np"].shape[0])
+
+        loc_i = loc_prob[offset:offset+n]        # (n,5)
+        act_i = act_prob[offset:offset+n]        # (n,4)
+        offset += n
+
+        # pred location: argmax
+        loc_pred = np.argmax(loc_i, axis=1).astype(np.int32)
+
+        # (추가) location 확률 저장
+        loc_maxp = np.max(loc_i, axis=1).astype(np.float32)          # (n,)
+        df.loc[ridx, "loc_maxp"] = pd.Series(loc_maxp, index=ridx)
+
+        for k in range(5):
+            df.loc[ridx, f"loc_p{k}"] = pd.Series(loc_i[:, k].astype(np.float32), index=ridx)
+        
+        # pred action: threshold => 0/1
+        act_bin = (act_i >= ths).astype(np.int32)
+
+        # df pred 업데이트 (index 정렬 안전하게 Series로)
+        df.loc[ridx, "location"] = pd.Series(loc_pred, index=ridx, dtype="Int64")
+        df.loc[ridx, "a0"] = pd.Series(act_bin[:, 0], index=ridx, dtype="Int64")
+        df.loc[ridx, "a1"] = pd.Series(act_bin[:, 1], index=ridx, dtype="Int64")
+        df.loc[ridx, "a2"] = pd.Series(act_bin[:, 2], index=ridx, dtype="Int64")
+        df.loc[ridx, "a3"] = pd.Series(act_bin[:, 3], index=ridx, dtype="Int64")
+
+        # --- GT 파싱 & 매칭 ---
+        gt_objs = parse_gt_file(item["gt_path"], img_w=item["w"], img_h=item["h"], mode=GT_PARSE_MODE)
+
+        csv_boxes_for_match = item["boxes_np_clipped"]  # expand 전 박스
+        csv_classes = item.get("classes_np", None)
+
+        matched = match_gt_for_boxes(
+            csv_boxes_for_match,
+            gt_objs,
+            iou_thresh=IOU_MATCH_THRESH,
+            csv_classes=csv_classes,
+            require_class_match=REQUIRE_CLASS_MATCH,
+        )
+
+        # 결과 배열 준비: GT 없으면 NA로 남김
+        loc_gt = np.full((n,), -999, dtype=np.int32)
+        act_gt = np.full((n, 4), -999, dtype=np.int32)
+        match_iou = np.full((n,), np.nan, dtype=np.float32)
+        found = np.zeros((n,), dtype=np.int32)
+
+        for ii, m in enumerate(matched):
+            if m is None:
+                continue
+            found[ii] = 1
+            match_iou[ii] = float(m.get("match_iou", np.nan))
+            loc_gt[ii] = int(m.get("location", -1))
+            a = m.get("action", [0, 0, 0, 0])
+            if isinstance(a, (list, tuple)) and len(a) >= 4:
+                act_gt[ii, :] = np.array(a[:4], dtype=np.int32)
+
+        # GT가 없는 경우(매칭 실패) NA 처리
+        mask_not_found = (found == 0)
+
+        # GT series 생성
+        loc_gt_s = pd.Series(loc_gt, index=ridx, dtype="Int64")
+        a0_gt_s  = pd.Series(act_gt[:, 0], index=ridx, dtype="Int64")
+        a1_gt_s  = pd.Series(act_gt[:, 1], index=ridx, dtype="Int64")
+        a2_gt_s  = pd.Series(act_gt[:, 2], index=ridx, dtype="Int64")
+        a3_gt_s  = pd.Series(act_gt[:, 3], index=ridx, dtype="Int64")
+
+        # placeholder(-999) 및 not_found는 NA로
+        loc_gt_s[mask_not_found] = pd.NA
+        a0_gt_s[mask_not_found]  = pd.NA
+        a1_gt_s[mask_not_found]  = pd.NA
+        a2_gt_s[mask_not_found]  = pd.NA
+        a3_gt_s[mask_not_found]  = pd.NA
+
+        # loc_match: GT가 있을 때만 True/False, 없으면 NA
+        loc_match = (loc_pred == loc_gt)
+        loc_match_s = pd.Series(loc_match, index=ridx, dtype="boolean")
+        loc_match_s[mask_not_found] = pd.NA
+
+        # gt_found: found==1은 1, 나머지는 NA
+        gt_found_s = pd.Series(found, index=ridx, dtype="Int64")
+        gt_found_s[mask_not_found] = pd.NA
+
+        # df GT 업데이트
+        df.loc[ridx, "location_gt"] = loc_gt_s
+        df.loc[ridx, "a0_gt"] = a0_gt_s
+        df.loc[ridx, "a1_gt"] = a1_gt_s
+        df.loc[ridx, "a2_gt"] = a2_gt_s
+        df.loc[ridx, "a3_gt"] = a3_gt_s
+
+        df.loc[ridx, "gt_match_iou"] = match_iou
+        df.loc[ridx, "gt_found"] = gt_found_s
+        df.loc[ridx, "loc_match"] = loc_match_s
+
+
+# 배치 루프
+batch = []
+for gi, (frame_stem, gdf) in enumerate(groups, start=1):
+    img_path = Path(gdf["image_path"].iloc[0])
+    gt_path  = Path(gdf["gt_path"].iloc[0])
+
+    # 이미지가 없으면 pred도 NA 유지하고 넘어감
+    if not img_path.exists():
+        print(f"[WARN] missing image: {img_path}")
+        continue
+
+    boxes_np = gdf[["x1", "y1", "x2", "y2"]].to_numpy(dtype=np.float32)
+    classes_np = None
+    if "class" in gdf.columns:
+        classes_np = gdf["class"].to_numpy(dtype=np.int32)
+
+    item = {
+        "frame_stem": frame_stem,
+        "row_idx": gdf.index.to_numpy(),
+        "img_path": img_path,
+        "gt_path": gt_path,
+        "boxes_np": boxes_np,
+        "classes_np": classes_np,
+    }
+    batch.append(item)
+
+    if len(batch) >= FRAME_BATCH:
+        run_batch_infer(model, batch)
+        if gi % 128 ==0:
+            print(f"[infer] processed {gi}/{len(groups)} frames")
+        batch = []
+
+# 잔여 배치 처리
+if len(batch) > 0:
+    run_batch_infer(model, batch)
+    print(f"[infer] processed {len(groups)}/{len(groups)} frames")
+
+# ============================================================
+# 8) 저장
+# ============================================================
+OUT_CSV.parent.mkdir(parents=True, exist_ok=True)
+df.to_csv(OUT_CSV, index=False, encoding="utf-8-sig")
+
+meta = {
+    "img_root": str(IMG_ROOT),
+    "in_csv": str(IN_CSV),
+    "out_csv": str(OUT_CSV),
+    "ckpt": str(CKPT_PATH),
+    "location_output": "argmax + softmax_probs(loc_p0~loc_p4, loc_maxp)",
+    "action_output": "binary_by_threshold",
+    "per_class_th": PER_CLASS_TH,
+    "box_expand_ratio": BOX_EXPAND_RATIO,
+    "iou_match_thresh": IOU_MATCH_THRESH,
+    "require_class_match": REQUIRE_CLASS_MATCH,
+    "frame_batch": FRAME_BATCH,
+    "gt_parse_mode": GT_PARSE_MODE,
+}
+meta_path = OUT_CSV.with_suffix(".meta.json")
+meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+print("\nDone.")
+print("Saved:", OUT_CSV)
+print("Meta :", meta_path)
