@@ -2,32 +2,57 @@
 📌 팀명 : 엥?비디아 <br>
 📌 팀원 : 강지윤, 김민지, 임은석, 함성민
 
+<table>
+  <tr>
+    <td align="center">
+     <img width="160" height="160" alt="image" src="https://github.com/user-attachments/assets/c56595d9-1d25-4f18-8447-4bbe2ca82bce" /><br/>강지윤
+    </td>
+    <td align="center">
+      <img width="100" height="100" alt="image" src="https://github.com/user-attachments/assets/db8a1282-671b-4ef2-87e0-840c08b2b650" /><br/>김민지
+    </td>
+    <td align="center">
+      <img width="100" height="100" alt="image" src="https://github.com/user-attachments/assets/af8934e3-3616-4b2a-b9e7-25129c1c3208" /><br/>임은석
+    </td>
+    <td align="center">
+     <img width="100" height="100" alt="image" src="https://github.com/user-attachments/assets/3c7dcd17-638b-42e7-988a-afb9ed2432e8" />
+<br/>함성민
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <a href="https://github.com/ki-student"><img src="https://img.shields.io/badge/GitHub-ki--student-1F1F1F?logo=github" alt="강지윤 GitHub"/></a>
+    </td>
+    <td align="center">
+      <a href="https://github.com/Jinhyeok33"><img src="https://img.shields.io/badge/GitHub-Jinhyeok33-1F1F1F?logo=github" alt="김민지 GitHub"/></a>
+    </td>
+    <td align="center">
+      <a href="https://github.com/jiyun-kang12"><img src="https://img.shields.io/badge/GitHub-jiyun--kang12-1F1F1F?logo=github" alt="임은석 GitHub"/></a>
+    </td>
+    <td align="center">
+      <a href="https://github.com/oowixj819"><img src="https://img.shields.io/badge/GitHub-oowixj819-1F1F1F?logo=github" alt="한성민 GitHub"/></a>
+    </td>
+</table>
+
 <img width="600" height="337" alt="image" src="https://github.com/user-attachments/assets/9afb326b-6196-4a78-8da6-2254c3404bef" />
 
-## 1. 프로젝트 개요
+## 📍 1. 프로젝트 개요
 
-주제:"시각적 행동 상태 정보와 기하학적 지표를 결합한 카메라 기반 고신뢰도 전방 충돌 경고(Forward Collision Warning, FCW) 시스템 구현”
+>주제:시각적 행동 상태 정보와 기하학적 지표를 결합한 카메라 기반 고신뢰도 전방 충돌 경고(Forward Collision Warning, FCW) 시스템 구현 <br>
 
-### 1.1. 주제 선정 배경 및 목표
+> 수행기간 : 2026.01.09 ~2026.01.16
 
-자율주행 및 ADAS 기술에서 전방 충돌 경고(FCW) 및 자동 긴급 제동(AEB)은 사고 예방을 위한 핵심 기능 중 하나이다. 현재 양산차의 FCW/AEB는 대체로 레이더와 카메라를 결합한 센서 퓨전 구성이 주류로, 악천후·야간 등 다양한 환경에서의 신뢰도를 확보하는 대신 센서 구성·통합·보정에 따른 원가 부담이 존재한다. 반면 원가 절감을 위한 카메라 기반 접근은 구현 비용 측면에서 유리하지만, 시인성 저하나 고속/장거리 조건에서 성능이 흔들릴 수 있어 “카메라만으로도 신뢰도 높은 위험도 산출”을 달성하는 기술적 필요가 커지고 있다. 또한 상용 ADAS는 실시간 경고/제동이 전제되므로, 고성능 연산 자원이 제한된 환경에서도 지연 없이 동작할 수 있는 처리 속도가 신뢰도만큼이나 중요한 요구 조건이다.
+### 📌 1.1. 주제 선정 배경 
+- **기존 기술의 한계**: 현재 주류인 센서 퓨전(레이더+카메라) 방식은 높은 원가 부담이 있으나 카메라 단독 방식은 고속/장거리 조건에서 신뢰도 확보가 어려운 한계가 있음
+- **단순 지표의 맹점**: 거리와 속도만 계산하는 기존 TTC(충돌 예상 시간) 방식은 앞차의 급제동이나 끼어들기 전조 증상(브레이크등, 깜빡이)을 미리 읽지 못해 정교한 위험 판단에 한계가 있음
+- **기술적 필요성**: 저성능 연산 환경에서도 지연 없이 동작하면서, 물리적 지표와 차량의 의도(행동 변화)를 동시에 포착하는 경제적이고 신뢰도 높은 시스템이 필요함
 
-특히 선행 차량의 급제동, 차로 변경, 교차로 진입과 같은 상황에서는 위험이 거리/상대속도 변화로 명확히 드러나기 이전에 차량의 상태 변화(감속 신호, 진로 변경 준비 등)가 먼저 나타나는 경우가 많다. 그러나 기존 FCW는 주로 거리·상대속도 등 기하학적 지표(예: TTC)에 기반해 위험도를 산출하는 경향이 있어, 동일한 속도·거리 조건에서도 실제 위험도가 달라지는 복합 상황을 정교하게 구분하는 데 한계가 있다. 그렇다고 기하학적 지표를 배제할 경우, 물리적으로 명확한 충돌 위험(급접근 등)에 대한 안정적인 기준을 잃을 수 있으므로, 실사용 관점에서는 TTC와 같은 기초 지표를 유지하면서도 행동 변화가 선행하는 시나리오를 보완하는 접근이 필요하다.
+### 📌 1.2. 프로젝트 목표
+- **단일 센서 활용**: 고가의 LiDAR나 레이더 없이 **전방 RGB 카메라**만 사용하여 시스템 구현
+- **복합 판단 로직**:
+    1. **물리적 안전선 확보**: 거리·상대속도 기반의 기하학적 지표(TTC) 산출
+    2. **조기 위험 감지**: 차량의 상태 정보(브레이크등, 방향지시등, 위치 변화)를 추출 및 통합
+- **실시간성 및 신뢰도**: 제한된 연산 자원에서도 지연 없이 동작하며, 단순 기하학적 수치보다 더 빠르고 정교하게 위험 상황을 식별하여 경고의 정확도 향상
 
-> 이에 본 프로젝트는 고가의 LiDAR(또는 레이더) 없이도 전방 RGB 카메라 영상만을 사용하되, (1) 기하학적 위험도 지표(TTC 또는 TTC proxy)를 지속적으로 산출하고, 동시에 (2) 객체 단위의 시각적 상태 정보(예: 바운딩 박스 스케일/위치 변화, 브레이크등 점등, 방향지시등 신호)를 추출·통합하여 차량의 의도 및 행동 변화를 함께 고려하는 FCW를 구현하고자 한다. 이와 같은 “기하학 기반 안전한 하한선 + 상태 기반 조기 단서”의 결합을 통해, 저성능 연산 환경에서도 실시간으로 동작하면서 실제 주행에서의 위험 상황을 더 빠르고 정교하게 식별하고 경고의 신뢰도를 높이는 것을 목표로 한다.
+## 📍 2. 역할분담 🧑‍🤝‍🧑
+<table> <tr> <th align="center">Role</th> <th align="center">담당 영역</th> <th align="center">주요 수행 내용</th> <th align="center">담당자</th> </tr> <tr> <td align="center"><b>Role #1</b><br/>📊 데이터 / GT 파이프라인</td> <td align="center">데이터 전처리 및 분석</td> <td> • txt 라벨 파싱<br/> • instance mask 해석<br/> • train / val split<br/> • 데이터 증강(기초)<br/> • 데이터 분포 리포트 </td> <td align="center"> 강지윤<br/> 함성민<br/> 임은석<br/> 김민지 </td> </tr> <tr> <td align="center"><b>Role #2</b><br/>🚗 Object Detection 모델</td> <td align="center">객체 검출 모델 학습</td> <td> • Agent(차량/버스) 2D detector 학습/추론 파이프라인<br/> • 성능 지표(mAP) 산출<br/><br/> <b>산출물</b><br/> • checkpoint<br/> • inference script<br/> • PR curve / 성능 표 </td> <td align="center"> 강지윤<br/> 김민지 </td> </tr> <tr> <td align="center"><b>Role #3</b><br/>📍 Location / Action 모델</td> <td align="center">객체 상태 인식</td> <td> • 2-stage crop classifier 구현<br/> • Location: 5-way softmax<br/> • Action: 4-way sigmoid (BCE, multi-label)<br/><br/> <b>산출물</b><br/> • attribute predictor<br/> • confusion matrix / micro-F1<br/> • threshold 튜닝 결과 </td> <td align="center"> 함성민 </td> </tr> <tr> <td align="center"><b>Role #4</b><br/>⚠️ Tracking + TTC + FCW</td> <td align="center">위험도 판단 및 서비스 데모</td> <td> • SORT 기반 객체 추적 연동<br/> • TTC(Time-To-Collision) 계산<br/> • FCW 로직 설계<br/> • 영상 오버레이(UI/UX) 구현<br/><br/> <b>산출물</b><br/> • 데모 영상<br/> • 경고 로그<br/> • 실패 케이스 분석 </td> <td align="center"> 임은석<br/> 강지윤<br/> 김민지 </td> </tr> </table>
 
-### 1.2. 프로젝트 기대효과
-
-본 프로젝트를 통해 다음과 같은 효과를 기대할 수 있다.
-
-> **1. 조기 충돌 위험 감지 성능 향상**<br>
-> 브레이크등 및 방향지시등과 같은 행동·상태 정보를 활용하여, 거리 변화 이전 단계에서 위험 상황을 인지할 수 있다.
-
-> **2. 현실 도로 환경 반영도 증가**<br>
-> 다양한 지역과 기상 조건에서 수집된 영상 데이터를 활용함으로써 실제 주행 환경에서 발생 가능한 충돌 시나리오를 효과적으로 반영할 수 있다.
- 
-> **3. 추론 최적화 기반 실시간 FCW 실용화 가능성 제시**<br>
-> 탐지 성능 유지 조건에서 FP16, 엔진화, 후처리(NMS) 최적화를 적용하여 end-to-end 추론 지연을 단축하고 처리량(FPS)을 향상함으로써, 배포 환경(차량 탑재 등)을 고려한 추론 최적화 접근의 유효성을 T4 벤치마크에서 정량적으로 제시한다.
-
-> **4. 자율주행 핵심 기술 통합 역량 강화**<br>
-> 객체 인식, 복합 상태 인식, 객체 추적, 위험도 평가를 하나의 파이프라인으로 통합하여 자율주행 AI 시스템 설계 역량을 강화할 수 있다.
