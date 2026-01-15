@@ -14,11 +14,15 @@ from PIL import Image
 # 0) 사용자 입력 (확정)
 # ============================================================
 IMG_ROOT = Path("/content/ds_cache/차량상태인식_extracted/train")
-IN_CSV  = Path("/content/drive/MyDrive/datasets/차량상태인식/[AICV] 프로젝트 1/test_bbox_mjkim_0115.csv")
-OUT_CSV = Path("/content/drive/MyDrive/datasets/차량상태인식/[AICV] 프로젝트 1/test_bbox_mjkim_loc_smham_0115.csv")
+#IN_CSV  = Path("/content/drive/MyDrive/datasets/차량상태인식/[AICV] 프로젝트 1/test_bbox_mjkim_0114.csv")
+#OUT_CSV = Path("/content/drive/MyDrive/datasets/차량상태인식/[AICV] 프로젝트 1/test_bbox_mjkim_0114_loc_smham_0115.csv")
+
+IN_CSV  = Path("/content/drive/MyDrive/datasets/차량상태인식/[AICV] 프로젝트 1/test_bbox_yolo11nparam_mjkim_0115.csv")
+OUT_CSV = Path("/content/drive/MyDrive/datasets/차량상태인식/[AICV] 프로젝트 1/test_bbox_yolo11nparam_mjkim_0115_loc_smham_0115.csv")
 
 #CKPT_PATH = Path("/content/drive/MyDrive/roi_runs/roi_align_run_001/finetune_posw_sqrt_20260113_082525/best_by_microf1_bestth.pt")
-CKPT_PATH = Path("/content/drive/MyDrive/roi_runs/roi_align_run_001/retrain_boxexp_0p9_20260114_055029/epoch_008_compatible_weights.pt")
+#CKPT_PATH = Path("/content/drive/MyDrive/roi_runs/roi_align_run_001/retrain_boxexp_0p9_20260114_055029/epoch_008_compatible_weights.pt")
+CKPT_PATH = Path("/content/drive/MyDrive/roi_runs/roi_align_run_001/retrain_boxexp_0p9_20260114_055029/epoch_008.pt")
 
 # per-class threshold (action0~3)
 PER_CLASS_TH = [0.50, 0.90, 0.40, 0.25]
@@ -137,12 +141,20 @@ class RoiAlignMultiTask(nn.Module):
 
 def load_model(ckpt_path: Path) -> RoiAlignMultiTask:
     model = RoiAlignMultiTask(num_loc=5, num_act=4).to(device)
+
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
-    state = ckpt.get("model_state", ckpt.get("state_dict", ckpt))
-    missing, unexpected = model.load_state_dict(state, strict=False)
-    print("load_state_dict(strict=False)")
-    print("  missing keys   :", len(missing))
-    print("  unexpected keys:", len(unexpected))
+
+    # epoch_xxx.pt: dict with model_state
+    if isinstance(ckpt, dict) and "model_state" in ckpt:
+        state = ckpt["model_state"]
+    # state_dict만 저장된 파일인 경우
+    elif isinstance(ckpt, dict):
+        state = ckpt
+    else:
+        raise ValueError("Unknown checkpoint format")
+
+    missing, unexpected = model.load_state_dict(state, strict=True)  # ORIG는 strict=True 권장
+    print("load_state_dict(strict=True) OK")
     model.eval()
     return model
 
@@ -508,4 +520,3 @@ meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="u
 print("\nDone.")
 print("Saved:", OUT_CSV)
 print("Meta :", meta_path)
-
