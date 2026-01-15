@@ -23,8 +23,8 @@ CKPT_PATH = Path("/content/drive/MyDrive/roi_runs/roi_align_run_001/retrain_boxe
 # per-class threshold (action0~3)
 PER_CLASS_TH = [0.50, 0.90, 0.40, 0.25]
 
-# inference bbox expand 정책(이전과 동일)
-BOX_EXPAND_RATIO = 1.2
+# inference bbox expand 정책
+BOX_EXPAND_RATIO = 0.9
 
 # GT 매칭
 IOU_MATCH_THRESH = 0.5          # 필요 시 0.3으로 낮추세요
@@ -508,3 +508,4 @@ meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="u
 print("\nDone.")
 print("Saved:", OUT_CSV)
 print("Meta :", meta_path)
+
