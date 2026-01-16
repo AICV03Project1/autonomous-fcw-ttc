@@ -23,10 +23,10 @@
       <a href="https://github.com/jiyun-kang12"><img src="https://img.shields.io/badge/GitHub-jiyun--kang12-1F1F1F?logo=github" alt="강지윤 GitHub"/></a>
     </td>
     <td align="center">
-      <a href="https://github.com/lhjjsh8-sketch"><img src="https://img.shields.io/badge/GitHub-lhjjsh8--sketch-1F1F1F?logo=github" alt="김민지 GitHub"/></a>
+      <a href="https://github.com/mjmjkkk"><img src="https://img.shields.io/badge/GitHub-mjmjkkk-1F1F1F?logo=github" alt="김민지 GitHub"/></a>
     </td>
     <td align="center">
-      <a href="https://github.com/mjmjkkk"><img src="https://img.shields.io/badge/GitHub-mjmjkkk-1F1F1F?logo=github" alt="임은석 GitHub"/></a>
+      <a href="https://github.com/lhjjsh8-sketch"><img src="https://img.shields.io/badge/GitHub-lhjjsh8--sketch-1F1F1F?logo=github" alt="임은석 GitHub"/></a>
     </td>
     <td align="center">
       <a href="https://github.com/raretomato"><img src="https://img.shields.io/badge/GitHub-raretomato-1F1F1F?logo=github" alt="한성민 GitHub"/></a>
